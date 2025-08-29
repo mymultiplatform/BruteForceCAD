@@ -1,0 +1,69 @@
+# === Full Clean Build + Auto-Launch WITH 2s DELAY BEFORE ZOOM ===
+# Creates fresh mylot.lsp / mylot.scr, then launches AutoCAD via your shortcut,
+# opens a metric template, runs LOTLAYOUT, waits 2s, and ZOOMs Extents.
+
+$desk = Join-Path $env:USERPROFILE 'Desktop'
+$lsp  = Join-Path $desk 'mylot.lsp'
+$scr  = Join-Path $desk 'mylot.scr'
+$acad = "C:\Users\PCEL SERVICE\Desktop\AutoCAD Architecture.lnk"  # your shortcut
+
+# 1) Clean old files
+Remove-Item $lsp,$scr -ErrorAction SilentlyContinue
+
+# 2) Write LISP (adds 2s delay via vlax-sleep before ZOOM)
+@'
+(defun c:LOTLAYOUT ( / lotW lotL parkL blockL hallL extra houseL p1 p2)
+  (setvar "CMDECHO" 0)
+  (setq lotW 17.5  lotL 28.0  parkL 6.5  blockL 0.5  hallL 2.0  extra 3.0)
+  (setq houseL (- lotL parkL blockL hallL extra))
+  (setq p1 '(0 0)  p2 (list lotW lotL))
+
+  ; Draw geometry
+  (command "._RECTANGLE" p1 p2)                                                    ; Lot
+  (command "._RECTANGLE" '(0 0) (list lotW parkL))                                 ; Parking
+  (command "._RECTANGLE" (list 0 parkL) (list lotW (+ parkL blockL)))             ; Block
+  (command "._RECTANGLE" (list 0 (+ parkL blockL)) (list lotW (+ parkL blockL hallL))) ; Hallway
+  (command "._RECTANGLE" (list 0 (+ parkL blockL hallL))
+                         (list lotW (+ parkL blockL hallL houseL)))               ; House
+
+  ; Regenerate then wait 2 seconds so drawing database settles
+  (command "._REGENALL")
+  (vl-load-com)
+  (vlax-sleep 2000)
+
+  ; Zoom to extents (twice for reliability)
+  (command "._ZOOM" "_E")
+  (command "._ZOOM" "_E")
+
+  (princ (strcat "\nHouse footprint = " (rtos lotW 2 2) "m width × "
+                 (rtos houseL 2 2) "m length"))
+  (setvar "CMDECHO" 1)
+  (princ)
+)
+'@ | Set-Content -Path $lsp -Encoding ASCII
+
+# 3) Write Script (loads LISP, runs command; ZOOM handled in LISP)
+@"
+(load "C:/Users/PCEL SERVICE/Desktop/mylot.lsp")
+LOTLAYOUT
+"@ | Set-Content -Path $scr -Encoding ASCII
+
+Write-Host "Created files:`n$lsp`n$scr" -ForegroundColor Cyan
+
+# 4) Find a metric template (acadiso.dwt or *Metric*.dwt). Improves reliability of /b.
+$tmpl = Get-ChildItem -Path "$env:PUBLIC\Documents\Autodesk" -Recurse `
+        -Include acadiso.dwt,'*Metric*.dwt' -File -ErrorAction SilentlyContinue `
+        | Select-Object -First 1 -Expand FullName
+
+# 5) Launch AutoCAD via shortcut with template + script
+if (Test-Path $acad) {
+  if ($tmpl) {
+    Write-Host "Using template: $tmpl" -ForegroundColor Green
+    Start-Process -FilePath $acad -ArgumentList @('/t', "`"$tmpl`"", '/b', "`"$scr`"")
+  } else {
+    Write-Warning "Metric template not found—launching with script only."
+    Start-Process -FilePath $acad -ArgumentList @('/b', "`"$scr`"")
+  }
+} else {
+  Write-Error "Shortcut not found: $acad"
+}
